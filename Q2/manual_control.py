@@ -951,7 +951,6 @@ class LaneInvasionSensor(object):
 class LaneDetector(object):
     """
     A class to detect and visualize lanes on the side of a vehicle in a simulation environment.
-
     """
     def __init__(self, world):
             
@@ -965,47 +964,40 @@ class LaneDetector(object):
         self.K = self.build_projection_matrix(world.hud.dim[0], 
                                               world.hud.dim[1],
                                               90.0)
+        # Need to change default FOV to be read from camera_manager
 
 
     def get_waypoints(self, distance=1.0, num_waypoints=10):
         """
-        Retrieves a list of waypoints ahead of the vehicle.
-
-        :param distance: The distance between waypoints.
-        :param num_waypoints: The number of waypoints to retrieve.
-        :return: A list of waypoints ahead of the vehicle.
+        Retrieves a list of waypoints ahead of the vehicle distanced {distance}.
         """
         waypoints = []
-
         vehicle_location = self.vehicle.get_location()
-
         first_waypoint = self.map.get_waypoint(vehicle_location)
         waypoints.append(first_waypoint)
-
         # Note that next waypoint my point to opposite direction of vehice pov.
         # If that's the case take previous waypoints
-        reverse = abs(first_waypoint.transform.rotation.yaw - self.vehicle.get_transform().rotation.yaw) > 45
-
+        reverse = abs(first_waypoint.transform.rotation.yaw - self.vehicle.get_transform().rotation.yaw) > 60
         current_waypoint = first_waypoint
-
         for _ in range(num_waypoints):
             next_waypoint = current_waypoint.previous(distance)[0] if reverse else current_waypoint.next(distance)[0]
-
             if not next_waypoint:
                 break
-
             waypoints.append(next_waypoint)
             current_waypoint = next_waypoint
-
         return waypoints
     
 
     def get_lane_points(self, waypoints):
         """
-        Calculates the left and right lane points from the given waypoints.
+        Calculate the left and right lane points from the given waypoints.
 
-        :param waypoints: A list of waypoints to derive lane points from.
-        :return: Two lists of left and right lane points.
+        Parameters:
+            waypoints (list): A list of waypoints from which to derive lane points.
+        Returns:
+            tuple: A tuple containing:
+                - list: A list of left lane points as CARLA Location objects.
+                - list: A list of right lane points as CARLA Location objects.
         """
         left_points = []
         right_points = []
@@ -1025,9 +1017,14 @@ class LaneDetector(object):
 
     def get_projected_lane_points(self, camera):
         """
-        Draws the lanes on the given display using the calculated lane points.
+        Calculate the projected left and right lane points on the camera's image.
 
-        :param display: The display surface where the lanes will be drawn.
+        Parameters:
+            camera (carla.Camera): The camera object used for projection.
+        Returns:
+            tuple: A tuple containing:
+                - list: A list of projected left lane points as 2D coordinates.
+                - list: A list of projected right lane points as 2D coordinates.
         """
         left_points_projected = []
         right_points_projected = []
@@ -1046,6 +1043,9 @@ class LaneDetector(object):
         return left_points_projected, right_points_projected
 
     def render(self, display, camera):
+        """
+        Renders lane points to display
+        """
         left_lane_points, right_lane_points = self.get_projected_lane_points(camera)
         for left_lane_point, right_lane_point in zip(left_lane_points, right_lane_points):
             try:
@@ -1055,6 +1055,10 @@ class LaneDetector(object):
                 continue
         return
 
+    """
+    The following functions are the same (with minor adjustments) to what we've encountered in Q1. See Q1/bounding_box.py
+    for documentation
+    """
     @staticmethod
     def build_projection_matrix(w, h, fov, is_behind_camera=False):
         focal = w / (2.0 * np.tan(fov * np.pi / 360.0))
@@ -1073,8 +1077,6 @@ class LaneDetector(object):
     
     @staticmethod
     def get_image_point(loc, K, w2c):
-        """
-        """
         # Calculate 2D projection of 3D coordinate
 
         # Format the input coordinate (loc is a carla.Position object)
