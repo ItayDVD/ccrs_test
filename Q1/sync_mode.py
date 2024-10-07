@@ -23,6 +23,8 @@ class CarlaSyncMode(object):
     """
     Manager for syncronizing outputs from sensors. Sync mode is enabled as long as we are inside this context
 
+    https://gist.github.com/nsubiron/b6effce218e10a855a1674fb74bc135c
+    
     Example:
         with CarlaSyncMode(world, sensors) as sync_mode:
             while True:

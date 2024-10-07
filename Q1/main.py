@@ -22,47 +22,59 @@ except IndexError:
 
 from sync_mode import CarlaSyncMode
 from controller import Controller
-from vehicle_dynamics import Dynamics
 from utility import *
 
 import carla
 import pygame
-import csv
 import numpy as np
 
-from constants import TARGET_DISTANCE, BRAKE_THRESHOLD, MAX_VELOCITY
+from constants import TARGET_DISTANCE, BRAKE_THRESHOLD, MAX_VELOCITY, MAX_FRAMES, DELTA_TIMESTEP
+
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s - %(message)s'
+)
 
 
 def main():
-    
-    pygame.init()
-    clock = pygame.time.Clock()
 
     client = carla.Client('localhost', 2000)
-    client.set_timeout(20.0)
+    client.set_timeout(30.0)
 
-    world = client.load_world('/Game/Carla/Maps/Town02')
+    world = client.load_world('/Game/Carla/Maps/Town01')
 
+    # Arrays to hold active actors and data saved from ego vehicle
     actors_list = []
     saved_data = []
 
-    # Set the maximum number of frames
-    max_frames = 500  # Change this to your desired number of frames
-    frame_count = 0
+    # Set constants
+    max_frames = MAX_FRAMES
+    delta_timestep = DELTA_TIMESTEP
+    max_velocity = MAX_VELOCITY
+    brake_threshold = BRAKE_THRESHOLD
+    target_distance = TARGET_DISTANCE
+
+    # Hold a measurement of previous acceleration for jerk calculation
+    previous_acceleration = carla.Vector3D(0.0, 0.0, 0.0)
+
+    # Set spectator
+    spectator = world.get_spectator()
 
     try:
-        # Spawn vehicles
-        ego_vehicle_startpoint = carla.Transform(carla.Location(x=1.8, y= 10.0, z=0.3), 
-                                                    carla.Rotation(pitch=0.0, yaw=90.0, roll=0.0))
-        stationary_vehicle_startpoint = carla.Transform(carla.Location(x=1.8, y=110.0, z=0.3), 
+        # Spawn vehicles. Chose a random road in Town01 that is more than 100 meters long
+        ego_vehicle_startpoint = carla.Transform(carla.Location(x=-2.03, y= 9.56, z=0.3), 
+                                            carla.Rotation(pitch=0.0, yaw=90.0, roll=0.0))
+        stationary_vehicle_startpoint = carla.Transform(carla.Location(x=-2.03, y= 119.341, z=0.3), 
                                             carla.Rotation(pitch=0.0, yaw=90.0, roll=0.0))
 
         
         ego_vehicle = spawn_vehicle(world, ego_vehicle_startpoint)
-        print('created  %s' % ego_vehicle.type_id)
+        logging.info('created  %s' % ego_vehicle.type_id)
         
         stationary_vehicle = spawn_vehicle(world, stationary_vehicle_startpoint)
-        print('created  %s' % stationary_vehicle.type_id)
+        logging.info('created  %s' % stationary_vehicle.type_id)
 
         # Get vehicle dimensions
         ego_vehicle_dims = get_vehicle_dimensions(ego_vehicle)
@@ -70,11 +82,13 @@ def main():
 
         # Time for the ego vehicle to hit the gas
         ego_vehicle.set_simulate_physics(True)
-        ego_vehicle.set_autopilot(True)
+        ego_vehicle.set_autopilot(True) #Autopilot can be set off.
+        #Vehicle controls can be calculated manually via Controller (see controller.py)
 
         # Add sensors (RGB camera)
-        camera = spawn_camera(world, ego_vehicle, ego_vehicle_dims, view_width=720, view_height=576, view_fov=60)
-        print('created %s' % camera.type_id)
+        camera, camera_bp = spawn_camera(world, ego_vehicle, ego_vehicle_dims, 
+                                         view_width=720, view_height=576, view_fov=60)
+        logging.info('created %s' % camera.type_id)
 
         # Append vehicle and sensors to actors list
         actors_list.extend([ego_vehicle, stationary_vehicle, camera])
@@ -82,35 +96,34 @@ def main():
         # Run the simulation in syncronize mode
         with CarlaSyncMode(world, camera, fps=20) as sync_mode:
             while True:
-                    
-                clock.tick()
+                initial_frame = sync_mode.frame
 
                 # Advance the simulation and wait for data
-                data = sync_mode.tick(timeout=1.0)
+                _, img = sync_mode.tick(timeout=1.0)
+
+                # Adjust spectator viewpoint to behind ego vehicle
+                spectator_transform = carla.Transform(ego_vehicle.get_transform().location + carla.Location(x=0.0, y=-3.0, z=2.0),
+                                                      ego_vehicle.get_transform().rotation)
+                spectator.set_transform(spectator_transform)
 
                 # Calculate distance between vehicles
-                distance = Dynamics.get_true_distance(ego_vehicle, 
-                                        stationary_vehicle, ego_vehicle_dims, 
-                                        stationary_vehicle_dims)
-                # Calculate control inputs
+                distance = get_true_distance(ego_vehicle, stationary_vehicle, ego_vehicle_dims, 
+                                            stationary_vehicle_dims)
+                
+                # Calculate control inputs and measurements
                 velocity = ego_vehicle.get_velocity()
                 acceleration = ego_vehicle.get_acceleration()
+                jerk = get_jerk(acceleration, previous_acceleration, delta_timestep)
+                previous_acceleration = acceleration
                 velocity_magnitude = np.linalg.norm([velocity.x, velocity.y, velocity.z])
-                control = Controller.get_controls(distance, velocity_magnitude, 
-                                                target_distance=TARGET_DISTANCE, 
-                                                brake_threshold=BRAKE_THRESHOLD, 
-                                                max_velocity=MAX_VELOCITY)
 
-                # Apply controls to ego vehicle
-                if distance < 10.0:
-                    ego_vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=1.0))
-                    print("Ego vehicle braking!")
 
+                # Draw npc vehicles bounding boxes and get their 2D projected coordinates
+                bbox = init_bbox(img, camera, camera_bp, world, ego_vehicle)
 
                 # Save images from camera
-                for n, item in enumerate(data[1:]):
-                     item.save_to_disk('_out/%01d_%08d' % (n, sync_mode.frame))
-
+                img.save_to_disk('_out/%01d_%08d' % (frame_count, sync_mode.frame))
+                
                 # Save data
                 saved_data.append({
                     'frame': sync_mode.frame,
@@ -120,10 +133,22 @@ def main():
                     'acceleration_x': acceleration.x,
                     'acceleration_y': acceleration.y,
                     'acceleration_z': acceleration.z,
-                    'distance': distance
+                    'jerk_x': jerk.x,
+                    'jerk_y': jerk.y,
+                    'jerk_z': jerk.z,
+                    'distance': distance,
+                    'bbox_x_min': bbox[0],
+                    'bbox_x_max': bbox[1],
+                    'bbox_y_min': bbox[2],
+                    'bbox_y_max': bbox[3]
                 })
 
                 frame_count += 1
+                # If vehicle came to a stop at target distance stop simulation
+                if ((distance < target_distance and velocity_magnitude < 0.05) 
+                    or (sync_mode.frame-initial_frame > max_frames)):
+                    break
+
     finally:
         # Save collected data to a .csv file
         save_data_to_csv(saved_data)
@@ -131,6 +156,8 @@ def main():
         # Delete all actors
         for actor in actors_list:
             actor.destroy()
+        
+        logging.info("Simulation ended")
 
 if __name__ == '__main__':
     main()

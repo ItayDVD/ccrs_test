@@ -16,7 +16,7 @@ import math
 
 class Controller():
 
-    def get_controls(current_distance: float, current_velocity: float, target_distance: float = 1, brake_threshold: float = 10, max_velocity: float = math.inf) -> carla.VehicleControl:
+    def get_controls(current_distance: float, current_velocity: float, target_distance = 1, brake_threshold = 10, max_velocity = math.inf):
         """
         Computes vehicle control commands (throttle, break inputs) for the ego vehicle based on the relative distance to the target vehicle.
 
@@ -42,16 +42,16 @@ class Controller():
 
         if distance_to_stop > brake_threshold:
             # Let it rip baby!
-            _throttle = 1.0
-            _brake = 0.0
+            throttle_input = 1.0
+            brake_input = 0.0
         else:
-            _throttle = min(1.0, distance_to_stop / 100.0)
-            _brake = 1.0 - _throttle
+            throttle_input = min(1.0, distance_to_stop / 100.0)
+            brake_input = 1.0 - throttle_input
         
         if current_velocity > max_velocity:
-            _throttle = 0.0
+            throttle_input = 0.0
 
-        return carla.VehicleControl(throttle=_throttle, steer=0.0, brake=_brake, hand_brake=False, reverse=False, manual_gear_shift=False)
+        return carla.VehicleControl(throttle=throttle_input, steer=0.0, brake=brake_input, hand_brake=False, reverse=False, manual_gear_shift=False)
         
 
 
