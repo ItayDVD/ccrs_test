@@ -206,6 +206,7 @@ class World(object):
         self.player = None
         self.collision_sensor = None
         self.lane_invasion_sensor = None
+        self.lane_detection = True
         self.gnss_sensor = None
         self.imu_sensor = None
         self.radar_sensor = None
@@ -289,7 +290,8 @@ class World(object):
         self.lane_invasion_sensor = LaneInvasionSensor(self.player, self.hud)
         self.gnss_sensor = GnssSensor(self.player)
         self.imu_sensor = IMUSensor(self.player)
-        self.camera_manager = CameraManager(self.player, self.hud, self._gamma)
+        self.lane_detector = LaneDetector(self)
+        self.camera_manager = CameraManager(self.player, self.hud, self._gamma, self)
         self.camera_manager.transform_index = cam_pos_index
         self.camera_manager.set_sensor(cam_index, notify=False)
         actor_type = get_actor_display_name(self.player)
@@ -342,8 +344,9 @@ class World(object):
         self.hud.tick(self, clock)
 
     def render(self, display):
-        self.camera_manager.render(display)
+        self.camera_manager.render(display, self)
         self.hud.render(display)
+        # Itay: tried to add lane points rendering here but I need camera settings. Let's go to camera manager rendering!
 
     def destroy_sensors(self):
         self.camera_manager.sensor.destroy()
@@ -941,6 +944,158 @@ class LaneInvasionSensor(object):
         text = ['%r' % str(x).split()[-1] for x in lane_types]
         self.hud.notification('Crossed line %s' % ' and '.join(text))
 
+# ==============================================================================
+# -- LaneDetector -------------------------------------------------------------
+# ==============================================================================
+
+class LaneDetector(object):
+    """
+    A class to detect and visualize lanes on the side of a vehicle in a simulation environment.
+
+    """
+    def __init__(self, world):
+            
+        self.world = world.world  
+        self.vehicle = world.player
+        self.map = self.world.get_map()
+        self.radius = 0.5  
+        self.color = (0, 0, 255)  # Blue color
+        
+        #Projection matrix
+        self.K = self.build_projection_matrix(world.hud.dim[0], 
+                                              world.hud.dim[1],
+                                              90.0)
+
+
+    def get_waypoints(self, distance=1.0, num_waypoints=10):
+        """
+        Retrieves a list of waypoints ahead of the vehicle.
+
+        :param distance: The distance between waypoints.
+        :param num_waypoints: The number of waypoints to retrieve.
+        :return: A list of waypoints ahead of the vehicle.
+        """
+        waypoints = []
+
+        vehicle_location = self.vehicle.get_location()
+
+        first_waypoint = self.map.get_waypoint(vehicle_location)
+        waypoints.append(first_waypoint)
+
+        # Note that next waypoint my point to opposite direction of vehice pov.
+        # If that's the case take previous waypoints
+        reverse = abs(first_waypoint.transform.rotation.yaw - self.vehicle.get_transform().rotation.yaw) > 45
+
+        current_waypoint = first_waypoint
+
+        for _ in range(num_waypoints):
+            next_waypoint = current_waypoint.previous(distance)[0] if reverse else current_waypoint.next(distance)[0]
+
+            if not next_waypoint:
+                break
+
+            waypoints.append(next_waypoint)
+            current_waypoint = next_waypoint
+
+        return waypoints
+    
+
+    def get_lane_points(self, waypoints):
+        """
+        Calculates the left and right lane points from the given waypoints.
+
+        :param waypoints: A list of waypoints to derive lane points from.
+        :return: Two lists of left and right lane points.
+        """
+        left_points = []
+        right_points = []
+
+        for waypoint in waypoints:
+            location = waypoint.transform.location
+            lane_width = waypoint.lane_width
+
+            right_vector = waypoint.transform.get_right_vector()
+            left_vector = carla.Vector3D(-right_vector.x, -right_vector.y, 0)
+
+            left_points.append(carla.Location(location + left_vector*lane_width/2))
+            right_points.append(carla.Location(location + right_vector*lane_width/2))
+
+        return left_points, right_points
+
+
+    def get_projected_lane_points(self, camera):
+        """
+        Draws the lanes on the given display using the calculated lane points.
+
+        :param display: The display surface where the lanes will be drawn.
+        """
+        left_points_projected = []
+        right_points_projected = []
+
+        waypoints = self.get_waypoints()
+        left_points, right_points = self.get_lane_points(waypoints)
+
+        # Projection matrices for projecting points onto 2D image
+        self.w2c = np.array(camera.get_transform().get_inverse_matrix())
+
+        for left_point, right_point in zip(left_points,right_points):
+            # Project points onto 2D image
+            left_points_projected.append(self.get_image_point(left_point, self.K, self.w2c))
+            right_points_projected.append(self.get_image_point(right_point, self.K, self.w2c))
+
+        return left_points_projected, right_points_projected
+
+    def render(self, display, camera):
+        left_lane_points, right_lane_points = self.get_projected_lane_points(camera)
+        for left_lane_point, right_lane_point in zip(left_lane_points, right_lane_points):
+            try:
+                pygame.draw.circle(display, self.color, left_lane_point, 6)
+                pygame.draw.circle(display, self.color, right_lane_point, 6)
+            except Exception:
+                continue
+        return
+
+    @staticmethod
+    def build_projection_matrix(w, h, fov, is_behind_camera=False):
+        focal = w / (2.0 * np.tan(fov * np.pi / 360.0))
+        K = np.identity(3)
+
+        if is_behind_camera:
+            K[0, 0] = K[1, 1] = -focal
+        else:
+            K[0, 0] = K[1, 1] = focal
+
+        K[0, 2] = w / 2.0
+        K[1, 2] = h / 2.0
+        
+        return K
+
+    
+    @staticmethod
+    def get_image_point(loc, K, w2c):
+        """
+        """
+        # Calculate 2D projection of 3D coordinate
+
+        # Format the input coordinate (loc is a carla.Position object)
+        point = np.array([loc.x, loc.y, loc.z, 1])
+        # transform to camera coordinates
+        point_camera = np.dot(w2c, point)
+
+        # New we must change from UE4's coordinate system to an "standard"
+        # (x, y ,z) -> (y, -z, x)
+        # and we remove the fourth componebonent also
+        point_camera = [point_camera[1], -point_camera[2], point_camera[0]]
+
+        # now project 3D->2D using the camera matrix
+        point_img = np.dot(K, point_camera)
+        # normalize
+        point_img[0] /= point_img[2]
+        point_img[1] /= point_img[2]
+
+        return point_img[0:2]
+
+
 
 # ==============================================================================
 # -- GnssSensor ----------------------------------------------------------------
@@ -1082,7 +1237,7 @@ class RadarSensor(object):
 
 
 class CameraManager(object):
-    def __init__(self, parent_actor, hud, gamma_correction):
+    def __init__(self, parent_actor, hud, gamma_correction, world=None):
         self.sensor = None
         self.surface = None
         self._parent = parent_actor
@@ -1092,6 +1247,7 @@ class CameraManager(object):
         bound_y = 0.5 + self._parent.bounding_box.extent.y
         bound_z = 0.5 + self._parent.bounding_box.extent.z
         Attachment = carla.AttachmentType
+
 
         if not self._parent.type_id.startswith("walker.pedestrian"):
             self._camera_transforms = [
@@ -1135,10 +1291,12 @@ class CameraManager(object):
             if item[0].startswith('sensor.camera'):
                 bp.set_attribute('image_size_x', str(hud.dim[0]))
                 bp.set_attribute('image_size_y', str(hud.dim[1]))
+
                 if bp.has_attribute('gamma'):
                     bp.set_attribute('gamma', str(gamma_correction))
                 for attr_name, attr_value in item[3].items():
                     bp.set_attribute(attr_name, attr_value)
+
             elif item[0].startswith('sensor.lidar'):
                 self.lidar_range = 50
 
@@ -1182,9 +1340,11 @@ class CameraManager(object):
         self.recording = not self.recording
         self.hud.notification('Recording %s' % ('On' if self.recording else 'Off'))
 
-    def render(self, display):
+    def render(self, display, world):
         if self.surface is not None:
             display.blit(self.surface, (0, 0))
+        # Render lane points
+        world.lane_detector.render(display, self.sensor)
 
     @staticmethod
     def _parse_image(weak_self, image):
