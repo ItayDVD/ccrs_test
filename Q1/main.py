@@ -22,6 +22,7 @@ except IndexError:
 
 from sync_mode import CarlaSyncMode
 from controller import Controller
+from bounding_box import BoundingBox
 from utility import *
 
 import carla
@@ -37,6 +38,12 @@ logging.basicConfig(
     format='%(levelname)s - %(message)s'
 )
 
+# Set constants
+max_frames = MAX_FRAMES
+delta_timestep = DELTA_TIMESTEP
+max_velocity = MAX_VELOCITY
+brake_threshold = BRAKE_THRESHOLD
+target_distance = TARGET_DISTANCE
 
 def main():
 
@@ -49,15 +56,11 @@ def main():
     actors_list = []
     saved_data = []
 
-    # Set constants
-    max_frames = MAX_FRAMES
-    delta_timestep = DELTA_TIMESTEP
-    max_velocity = MAX_VELOCITY
-    brake_threshold = BRAKE_THRESHOLD
-    target_distance = TARGET_DISTANCE
-
     # Hold a measurement of previous acceleration for jerk calculation
     previous_acceleration = carla.Vector3D(0.0, 0.0, 0.0)
+
+    # Initiate a frame counter
+    frame_count = 0
 
     # Set spectator
     spectator = world.get_spectator()
@@ -96,7 +99,6 @@ def main():
         # Run the simulation in syncronize mode
         with CarlaSyncMode(world, camera, fps=20) as sync_mode:
             while True:
-                initial_frame = sync_mode.frame
 
                 # Advance the simulation and wait for data
                 _, img = sync_mode.tick(timeout=1.0)
@@ -119,14 +121,16 @@ def main():
 
 
                 # Draw npc vehicles bounding boxes and get their 2D projected coordinates
-                bbox = init_bbox(img, camera, camera_bp, world, ego_vehicle)
+                bbox = BoundingBox(world, camera, camera_bp, img, ego_vehicle)
+                bbox_verdicts, img_with_bbox = bbox.init_bbox()
 
-                # Save images from camera
-                img.save_to_disk('_out/%01d_%08d' % (frame_count, sync_mode.frame))
+                # Save images from camera (with the bounding box)
+                img_bgr = cv2.cvtColor(img_with_bbox, cv2.COLOR_RGBA2BGR)
+                cv2.imwrite(('_out/%01d.png' % frame_count), img_bgr)
                 
                 # Save data
                 saved_data.append({
-                    'frame': sync_mode.frame,
+                    'frame': frame_count,
                     'velocity_x': velocity.x,
                     'velocity_y': velocity.y,
                     'velocity_z': velocity.z,
@@ -137,16 +141,17 @@ def main():
                     'jerk_y': jerk.y,
                     'jerk_z': jerk.z,
                     'distance': distance,
-                    'bbox_x_min': bbox[0],
-                    'bbox_x_max': bbox[1],
-                    'bbox_y_min': bbox[2],
-                    'bbox_y_max': bbox[3]
+                    'bbox_x_min': bbox_verdicts[0],
+                    'bbox_x_max': bbox_verdicts[1],
+                    'bbox_y_min': bbox_verdicts[2],
+                    'bbox_y_max': bbox_verdicts[3]
                 })
 
                 frame_count += 1
+
                 # If vehicle came to a stop at target distance stop simulation
                 if ((distance < target_distance and velocity_magnitude < 0.05) 
-                    or (sync_mode.frame-initial_frame > max_frames)):
+                    or (frame_count > max_frames)):
                     break
 
     finally:
