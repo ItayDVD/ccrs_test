@@ -966,27 +966,88 @@ class LaneDetector(object):
                                               90.0)
         # Need to change default FOV to be read from camera_manager
 
+    
+    def is_vehicle_in_opposite_lane(self):
+        """
+        Check if vehicle is driving in the opposite lane.
 
+        Returns bool.
+        """
+        # Get the current location and waypoint of the vehicle
+        location = self.vehicle.get_location()
+        waypoint = self.map.get_waypoint(location)
+
+        vehicle_forward_vector = self.vehicle.get_transform().get_forward_vector()
+        waypoint_forward_vector = waypoint.transform.rotation.get_forward_vector()
+
+        # Calculate the dot product between the forward vector and the lane direction
+        dot_prod = vehicle_forward_vector.dot(waypoint_forward_vector)
+
+        if dot_prod < 0:  # Negative dot product indicates opposite direction
+            return True
+    
+        return False
+
+    def get_first_waypoint(self, count=5, distance=0.2):
+        """
+        Gets the first waypoint in the series of 10 corresponding to the lane.
+        Itay: Tried a fix the choice when going through a junction to get the right waypoint. 
+        Seems to work but efficiency is extremely low since we get all waypoints on the map at each iteration. 
+        This can be fixed with more time.
+        """
+        vehicle_location = self.vehicle.get_location()
+        closest_waypoint = self.map.get_waypoint(vehicle_location)
+
+        # if closest_waypoint.is_junction:
+
+        #     vehicle_yaw = self.vehicle.get_transform().rotation.yaw
+
+        #     all_waypoints = self.map.generate_waypoints(distance)
+
+        #     waypoints_and_distance = [(wp, self.distance_between_locations(wp.transform.location, vehicle_location)) for wp in all_waypoints]
+
+        #     # Filter closest waypoints
+        #     sorted_waypoints = sorted(waypoints_and_distance, key=lambda x: x[1])
+        #     nearest_waypoints = [wp[0] for wp in sorted_waypoints[:count]]
+
+        #     # Get the waypoint closest to vehicle orientation
+        #     nearest_waypoints_and_orientation = [(wp, abs(wp.transform.rotation.yaw - vehicle_yaw)) for wp in nearest_waypoints]
+        #     sorted_nearest_waypoints = sorted(nearest_waypoints_and_orientation, key=lambda x: x[1])
+
+        #     first_waypoint = sorted_nearest_waypoints[0][0]
+        #     return first_waypoint
+        # else:
+        return closest_waypoint
+    
     def get_waypoints(self, distance=1.0, num_waypoints=10):
         """
-        Retrieves a list of waypoints ahead of the vehicle distanced {distance}.
+        Generates 10 waypoints corresponding to the lane.
+
+        Parameters:
+            distance (float): distance between adjacent waypoints
+        Returns:
+            waypoints (list)
         """
-        waypoints = []
-        vehicle_location = self.vehicle.get_location()
-        first_waypoint = self.map.get_waypoint(vehicle_location)
-        waypoints.append(first_waypoint)
-        # Note that next waypoint my point to opposite direction of vehice pov.
-        # If that's the case take previous waypoints
-        reverse = abs(first_waypoint.transform.rotation.yaw - self.vehicle.get_transform().rotation.yaw) > 60
+        first_waypoint = self.get_first_waypoint()
+        waypoints = [first_waypoint]
+
         current_waypoint = first_waypoint
+
         for _ in range(num_waypoints):
-            next_waypoint = current_waypoint.previous(distance)[0] if reverse else current_waypoint.next(distance)[0]
+
+            next_waypoint = ( current_waypoint.previous(distance)[0] 
+                             if self.is_vehicle_in_opposite_lane() 
+                             else current_waypoint.next(distance)[0] )
+
             if not next_waypoint:
                 break
+
             waypoints.append(next_waypoint)
             current_waypoint = next_waypoint
+
         return waypoints
-    
+
+
 
     def get_lane_points(self, waypoints):
         """
@@ -1055,6 +1116,10 @@ class LaneDetector(object):
                 continue
         return
 
+    @staticmethod
+    def distance_between_locations(loc1, loc2):
+        return np.sqrt((loc1.x - loc2.x) ** 2 + (loc1.y - loc2.y) ** 2 + (loc1.z - loc2.z) ** 2)
+    
     """
     The following functions are the same (with minor adjustments) to what we've encountered in Q1. See Q1/bounding_box.py
     for documentation
